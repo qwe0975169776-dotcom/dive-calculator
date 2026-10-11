@@ -279,11 +279,41 @@
     font-size: 0.8rem;
     margin-top: 8px;
   }
+  /* ---------- 雲端同步狀態列 ---------- */
+  .sync-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: fit-content;
+    max-width: 100%;
+    margin: -12px auto 18px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 0.88rem;
+    background: #e5e7eb;
+    color: #374151;
+  }
+  .sync-bar.ok   { background: #dcfce7; color: #166534; }
+  .sync-bar.busy { background: #dbeafe; color: #1e40af; }
+  .sync-bar.err  { background: #fee2e2; color: #991b1b; }
+  .sync-btn {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 0 2px;
+  }
+  .sync-bar.off .sync-btn { display: none; }
 </style>
 </head>
 <body>
 <div class="container">
   <h1>🤿 潛水旅費動態結算器</h1>
+  <div class="sync-bar off" id="syncBar">
+    <span id="syncText">⏳ 載入中…</span>
+    <button type="button" class="sync-btn" id="btnSync" title="重新同步">🔄</button>
+  </div>
 
   <!-- ===================== 第一畫面 ===================== -->
   <section id="inputView">
@@ -380,10 +410,14 @@
     </div>
   </section>
 
-  <p class="version">💾 資料會自動暫存在這台裝置的瀏覽器・版本 3</p>
+  <p class="version">版本 4</p>
 </div>
 
 <script>
+  /* ================= Google Sheet 連線設定 ================= */
+  // Apps Script「網頁應用程式」的 /exec 網址；留空＝只存在本機
+  const SHEET_URL = '';
+
   /* ================= 後台常數設定（固定單價） ================= */
   const PRICES = Object.freeze({
     shoreDive: 600,   // 岸潛（每支）
@@ -399,6 +433,9 @@
 
   // 對帳表欄位順序（不含姓名與總額）
   const FEE_COLUMNS = ['owCourse', 'shoreDive', 'boatDive', 'insurance', 'lodging', 'ferry', 'scooter', 'lunch', 'breakfast'];
+  const NUM_FIELDS = ['shoreDive', 'lodging', 'scooter', 'insurance', 'lunch', 'breakfast'];
+  const CHECK_FIELDS = ['ferry', 'boatDive', 'owCourse'];
+  const STORAGE_KEY = 'diveCalculator_data';
 
   /* ================= 資料 ================= */
   let members = [];
@@ -406,37 +443,15 @@
   let editingId = null;     // 正在修正的成員 id（null = 一般新增模式）
   let formSnapshot = null;  // 進入修正前的表單內容，修正完會還原
 
-  const STORAGE_KEY = 'diveCalculator_data';
-
-  /* ================= 暫存（localStorage） ================= */
-  function saveState() {
-    try {
-      const data = {
-        members,
-        nextId,
-        // 修正中時存「修正前」的表單內容，避免重新整理後卡在修正模式
-        form: editingId !== null ? formSnapshot : getFormState()
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch (e) { /* 瀏覽器不允許儲存時就略過 */ }
-  }
-
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const data = JSON.parse(raw);
-      if (Array.isArray(data.members)) {
-        members = data.members;
-        const maxId = members.reduce((mx, m) => Math.max(mx, m.id || 0), 0);
-        nextId = Math.max(data.nextId || 1, maxId + 1);
-      }
-      if (data.form) setFormState(data.form);
-    } catch (e) { /* 資料壞掉就從空白開始 */ }
-  }
-
-  const NUM_FIELDS = ['shoreDive', 'lodging', 'scooter', 'insurance', 'lunch', 'breakfast'];
-  const CHECK_FIELDS = ['ferry', 'boatDive', 'owCourse'];
+  // 雲端同步狀態
+  let serverRev = null;     // 雲端名單的版本號
+  let dirty = false;        // 有還沒存到雲端的修改
+  let forcePush = false;    // 第一次把舊的本機資料搬上雲端
+  let changeSeq = 0;        // 名單每變動一次 +1
+  let pendingOps = [];      // 還沒存到雲端的每一筆動作（別台裝置同時修改時用來合併）
+  let syncing = false;
+  let syncTimer = null;
+  let retryTimer = null;
 
   /* ================= DOM ================= */
   const $ = (id) => document.getElementById(id);
@@ -460,42 +475,278 @@
   }
 
   function escapeHTML(str) {
-    return str.replace(/[&<>"']/g, (c) => ({
+    return String(str).replace(/[&<>"']/g, (c) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     }[c]));
   }
 
-  /* ================= 計算單一成員 ================= */
-  function calcMember(id) {
-    const counts = {
-      shoreDive: readCount('shoreDive'),
-      lodging:   readCount('lodging'),
-      scooter:   readCount('scooter'),
-      insurance: readCount('insurance'),
-      lunch:     readCount('lunch'),
-      breakfast: readCount('breakfast'),
-      ferry:     $('ferry').checked ? 1 : 0,
-      boatDive:  $('boatDive').checked ? 1 : 0,
-      owCourse:  $('owCourse').checked ? 1 : 0
-    };
+  /* ================= 計算 ================= */
+  // 由次數算出各項費用（從雲端或本機讀回來時也用這個，單價改了會自動套用）
+  function buildMember(id, name, counts) {
+    const c = {};
+    FEE_COLUMNS.forEach((k) => {
+      const n = Math.floor(Number(counts && counts[k]));
+      c[k] = Number.isFinite(n) && n > 0 ? n : 0;
+    });
+    CHECK_FIELDS.forEach((k) => { c[k] = c[k] ? 1 : 0; });
 
     const fees = {};
     let total = 0;
-    for (const key of FEE_COLUMNS) {
-      fees[key] = counts[key] * PRICES[key];
-      total += fees[key];
-    }
-
-    return {
-      id: id != null ? id : nextId++,
-      name: $('name').value.trim(),
-      counts,
-      fees,
-      total
-    };
+    FEE_COLUMNS.forEach((k) => {
+      fees[k] = c[k] * PRICES[k];
+      total += fees[k];
+    });
+    return { id, name, counts: c, fees, total };
   }
 
-  /* ================= 加入成員 ================= */
+  function calcMember(id) {
+    const counts = {};
+    NUM_FIELDS.forEach((k) => { counts[k] = readCount(k); });
+    CHECK_FIELDS.forEach((k) => { counts[k] = $(k).checked ? 1 : 0; });
+    return buildMember(id != null ? id : nextId++, $('name').value.trim(), counts);
+  }
+
+  /* ================= 表單內容 ================= */
+  function getFormState() {
+    const st = { name: $('name').value };
+    NUM_FIELDS.forEach((k) => { st[k] = $(k).value; });
+    CHECK_FIELDS.forEach((k) => { st[k] = $(k).checked; });
+    return st;
+  }
+
+  function setFormState(st) {
+    if (!st) return;
+    $('name').value = st.name || '';
+    NUM_FIELDS.forEach((k) => { if (st[k] != null) $(k).value = st[k]; });
+    CHECK_FIELDS.forEach((k) => { $(k).checked = !!st[k]; });
+  }
+
+  /* ================= 本機暫存（雲端連不上時的備份） ================= */
+  function saveLocal() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        members: members.map((m) => ({ id: m.id, name: m.name, counts: m.counts })),
+        nextId,
+        // 修正中時存「修正前」的表單內容，避免重新整理後卡在修正模式
+        form: editingId !== null ? formSnapshot : getFormState(),
+        serverRev,
+        dirty,
+        forcePush,
+        pendingOps
+      }));
+    } catch (e) { /* 瀏覽器不允許儲存時就略過 */ }
+  }
+
+  function loadLocal() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (Array.isArray(data.members)) {
+        members = data.members.map((m) => buildMember(m.id, m.name, m.counts));
+      }
+      fixNextId(data.nextId);
+      setFormState(data.form);
+
+      if ('serverRev' in data) {
+        serverRev = data.serverRev;
+        dirty = !!data.dirty;
+        forcePush = !!data.forcePush;
+        pendingOps = Array.isArray(data.pendingOps) ? data.pendingOps : [];
+      } else if (members.length) {
+        // 版本 3 以前只存在本機的名單：第一次連上雲端時整份搬上去
+        dirty = true;
+        forcePush = true;
+      }
+    } catch (e) { /* 資料壞掉就從空白開始 */ }
+  }
+
+  function fixNextId(saved) {
+    const maxId = members.reduce((mx, m) => Math.max(mx, m.id || 0), 0);
+    nextId = Math.max(saved || 1, nextId, maxId + 1);
+  }
+
+  /* ================= 名單變動（新增 / 修正 / 刪除 / 清空） ================= */
+  // op：{ t: 'add' | 'edit', m: 成員 } / { t: 'del', id } / { t: 'clear' }
+  function membersChanged(op) {
+    if (op) {
+      if (op.m) op.m = { id: op.m.id, name: op.m.name, counts: op.m.counts };
+      pendingOps.push(op);
+    }
+    dirty = true;
+    changeSeq++;
+    saveLocal();
+    renderList();
+    scheduleSync();
+  }
+
+  /* ================= 雲端同步 ================= */
+  function setStatus(type, text) {
+    $('syncBar').className = 'sync-bar ' + type;
+    $('syncText').textContent = text;
+  }
+
+  async function api(payload) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 20000);
+    try {
+      const res = payload
+        // 不設 Content-Type，避免瀏覽器先送 CORS 預檢（Apps Script 不支援）
+        ? await fetch(SHEET_URL, { method: 'POST', body: JSON.stringify(payload), signal: ac.signal })
+        : await fetch(SHEET_URL + (SHEET_URL.indexOf('?') >= 0 ? '&' : '?') + 'action=load&_=' + Date.now(), { signal: ac.signal });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function scheduleSync(delay) {
+    if (!SHEET_URL) return;
+    if (dirty) setStatus('busy', '⏳ 準備存到 Google Sheet…');
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(pushToCloud, delay == null ? 800 : delay);
+  }
+
+  function syncFailed(text) {
+    setStatus('err', text);
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => (dirty ? pushToCloud() : pullFromCloud()), 15000);
+  }
+
+  // 把整份名單存到 Google Sheet
+  async function pushToCloud() {
+    if (!SHEET_URL || !dirty) return;
+    if (syncing) { scheduleSync(); return; }
+    syncing = true;
+    clearTimeout(retryTimer);
+    setStatus('busy', '⏳ 正在存到 Google Sheet…');
+    const seq = changeSeq;
+    const sentOps = pendingOps.length;
+    try {
+      const data = await api({
+        action: 'save',
+        rev: serverRev,
+        force: forcePush,
+        members: members.map((m) => ({ id: m.id, name: m.name, counts: m.counts, fees: m.fees, total: m.total }))
+      });
+      if (data.ok) {
+        serverRev = data.rev;
+        forcePush = false;
+        pendingOps = pendingOps.slice(sentOps);
+        if (seq === changeSeq) dirty = false;
+        saveLocal();
+        if (dirty) scheduleSync(0);
+        else setStatus('ok', '☁️ 已存到 Google Sheet');
+      } else if (data.conflict) {
+        // 別台裝置剛存過：以雲端最新名單為底，把這台的修改重新套上去，再存一次
+        mergeWithCloud(data);
+        setStatus('busy', '⏳ 已合併另一台裝置的修改，正在存檔…');
+        scheduleSync(0);
+      } else {
+        throw new Error(data.error || '儲存失敗');
+      }
+    } catch (err) {
+      syncFailed('⚠️ 暫時存不到 Google Sheet（已先存在本機，稍後自動重試）');
+    } finally {
+      syncing = false;
+    }
+  }
+
+  // 從 Google Sheet 讀回最新名單
+  async function pullFromCloud() {
+    if (!SHEET_URL) return;
+    if (dirty) { pushToCloud(); return; }
+    if (syncing) return;
+    syncing = true;
+    clearTimeout(retryTimer);
+    setStatus('busy', '⏳ 正在讀取 Google Sheet…');
+    try {
+      const data = await api(null);
+      if (!data.ok) throw new Error(data.error || '讀取失敗');
+      if (!dirty) applyCloud(data); // 讀取途中若有新修改，以新修改為準
+    } catch (err) {
+      syncFailed('⚠️ 讀不到 Google Sheet，目前顯示本機暫存的資料');
+    } finally {
+      syncing = false;
+      if (dirty) scheduleSync(0);
+    }
+  }
+
+  function mergeWithCloud(data) {
+    const list = (data.members || []).map((m) => buildMember(m.id, m.name, m.counts));
+    let maxId = Math.max(nextId - 1, 0, ...list.map((m) => m.id));
+    const remap = {};
+    const newOps = [];
+
+    pendingOps.forEach((op) => {
+      if (op.t === 'clear') {
+        list.length = 0;
+        newOps.push(op);
+      } else if (op.t === 'add') {
+        let id = op.m.id;
+        if (list.some((x) => x.id === id)) {   // 編號和別台新增的人撞到 → 換一個
+          id = ++maxId;
+          remap[op.m.id] = id;
+          if (editingId === op.m.id) editingId = id;
+        }
+        maxId = Math.max(maxId, id);
+        list.push(buildMember(id, op.m.name, op.m.counts));
+        newOps.push({ t: 'add', m: { id, name: op.m.name, counts: op.m.counts } });
+      } else if (op.t === 'edit') {
+        const id = remap[op.m.id] || op.m.id;
+        const idx = list.findIndex((x) => x.id === id);
+        const m = buildMember(id, op.m.name, op.m.counts);
+        if (idx !== -1) list[idx] = m; else list.push(m);
+        newOps.push({ t: 'edit', m: { id, name: op.m.name, counts: op.m.counts } });
+      } else if (op.t === 'del') {
+        const id = remap[op.id] || op.id;
+        for (let i = list.length - 1; i >= 0; i--) if (list[i].id === id) list.splice(i, 1);
+        newOps.push({ t: 'del', id });
+      }
+    });
+
+    members = list;
+    pendingOps = newOps;
+    serverRev = data.rev;
+    forcePush = false;
+    dirty = true;
+    fixNextId(maxId + 1);
+
+    if (editingId !== null && !members.some((m) => m.id === editingId)) {
+      editingId = null;
+      setFormState(formSnapshot);
+      formSnapshot = null;
+      updateEditUI();
+    }
+    saveLocal();
+    renderList();
+    if (reportView.style.display === 'block') renderReport();
+  }
+
+  function applyCloud(data) {
+    members = (data.members || []).map((m) => buildMember(m.id, m.name, m.counts));
+    fixNextId();
+    serverRev = data.rev;
+    dirty = false;
+    forcePush = false;
+    pendingOps = [];
+
+    // 正在修正的人如果已經被別台裝置刪掉，就離開修正模式
+    if (editingId !== null && !members.some((m) => m.id === editingId)) {
+      editingId = null;
+      setFormState(formSnapshot);
+      formSnapshot = null;
+      updateEditUI();
+    }
+
+    saveLocal();
+    renderList();
+    if (reportView.style.display === 'block') renderReport();
+    setStatus('ok', '☁️ 已和 Google Sheet 同步');
+  }
+
+  /* ================= 加入 / 儲存修正 ================= */
   function addMember(e) {
     e.preventDefault();
 
@@ -509,30 +760,35 @@
     if (editingId !== null) {
       // 修正模式：原位置更新
       const idx = members.findIndex((m) => m.id === editingId);
-      if (idx !== -1) members[idx] = calcMember(editingId);
-      exitEdit();
+      const edited = calcMember(editingId);
+      if (idx !== -1) members[idx] = edited;
+      else members.push(edited);
+      leaveEditMode();
+      membersChanged({ t: 'edit', m: edited });
+      $('name').focus();
       return;
     }
 
-    members.push(calcMember());
-    renderList();
+    const added = calcMember();
+    members.push(added);
     resetFormForNext();
+    membersChanged({ t: 'add', m: added });
+  }
+
+  // 清空：姓名、岸潛、保險、午餐、早餐、OW、船潛
+  // 保留：住宿、機車、船票
+  function resetFormForNext() {
+    $('name').value = '';
+    $('shoreDive').value = 0;
+    $('insurance').value = 0;
+    $('lunch').value = 0;
+    $('breakfast').value = 0;
+    $('owCourse').checked = false;
+    $('boatDive').checked = false;
+    $('name').focus();
   }
 
   /* ================= 修正成員 ================= */
-  function getFormState() {
-    const st = { name: $('name').value };
-    NUM_FIELDS.forEach((k) => { st[k] = $(k).value; });
-    CHECK_FIELDS.forEach((k) => { st[k] = $(k).checked; });
-    return st;
-  }
-
-  function setFormState(st) {
-    $('name').value = st.name;
-    NUM_FIELDS.forEach((k) => { $(k).value = st[k]; });
-    CHECK_FIELDS.forEach((k) => { $(k).checked = !!st[k]; });
-  }
-
   function startEdit(id) {
     const m = members.find((x) => x.id === id);
     if (!m) return;
@@ -551,11 +807,16 @@
   }
 
   // 離開修正模式，表單還原成修正前的內容
-  function exitEdit() {
+  function leaveEditMode() {
     editingId = null;
-    if (formSnapshot) setFormState(formSnapshot);
+    setFormState(formSnapshot);
     formSnapshot = null;
     updateEditUI();
+  }
+
+  function cancelEdit() {
+    leaveEditMode();
+    saveLocal();
     renderList();
     $('name').focus();
   }
@@ -570,32 +831,15 @@
     $('formCard').classList.toggle('edit-mode', editing);
   }
 
-  // 清空：姓名、岸潛、保險、午餐、早餐、OW、船潛
-  // 保留：住宿、機車、船票
-  function resetFormForNext() {
-    $('name').value = '';
-    $('shoreDive').value = 0;
-    $('insurance').value = 0;
-    $('lunch').value = 0;
-    $('breakfast').value = 0;
-    $('owCourse').checked = false;
-    $('boatDive').checked = false;
-    $('name').focus();
-  }
-
   /* ================= 刪除成員 ================= */
   function deleteMember(id) {
     members = members.filter((m) => m.id !== id);
-    if (id === editingId) {
-      exitEdit();
-    } else {
-      renderList();
-    }
+    if (id === editingId) leaveEditMode();
+    membersChanged({ t: 'del', id });
   }
 
   /* ================= 列表預覽 ================= */
   function renderList() {
-    saveState();
     const list = $('memberList');
     const summary = $('listSummary');
 
@@ -638,7 +882,7 @@
     }).join('');
   }
 
-  // 用事件委派處理「刪除重打」
+  // 用事件委派處理「修正」與「刪除重打」
   $('memberList').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-id]');
     if (!btn) return;
@@ -708,31 +952,44 @@
 
   /* ================= 全部清空 ================= */
   function clearAll() {
-    if (members.length > 0 && !confirm('確定要清空所有成員與輸入嗎？這個動作無法復原。')) return;
+    const msg = SHEET_URL
+      ? '確定要清空所有成員嗎？\nGoogle Sheet 上的名單也會一起清空，無法復原。'
+      : '確定要清空所有成員與輸入嗎？這個動作無法復原。';
+    if (members.length > 0 && !confirm(msg)) return;
     members = [];
-    nextId = 1;
     editingId = null;
     formSnapshot = null;
-    updateEditUI();
     form.reset(); // 回到預設值（船票勾選、其他為 0 / 不勾）
-    renderList();
+    updateEditUI();
+    membersChanged({ t: 'clear' });
     $('name').focus();
   }
 
   /* ================= 綁定事件 ================= */
   form.addEventListener('submit', addMember); // 在任一欄位按 Enter 也能加入
+  form.addEventListener('input', saveLocal);  // 打到一半也先存在本機
+  form.addEventListener('change', saveLocal);
   $('btnReport').addEventListener('click', showReport);
   $('btnBack').addEventListener('click', showInput);
   $('btnClearAll').addEventListener('click', clearAll);
-  $('btnCancelEdit').addEventListener('click', exitEdit);
+  $('btnCancelEdit').addEventListener('click', cancelEdit);
+  $('btnSync').addEventListener('click', () => (dirty ? pushToCloud() : pullFromCloud()));
 
-  // 表單打字時也暫存
-  form.addEventListener('input', saveState);
-  form.addEventListener('change', saveState);
+  // 切回這個分頁時，抓別台裝置的最新名單
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') pullFromCloud();
+  });
 
-  // 初始化：先讀回暫存
-  loadState();
+  /* ================= 初始化 ================= */
+  loadLocal();
+  updateEditUI();
   renderList();
+  if (SHEET_URL) {
+    if (dirty) pushToCloud();
+    else pullFromCloud();
+  } else {
+    setStatus('off', '💾 目前只存在這台裝置（尚未連接 Google Sheet）');
+  }
   $('name').focus();
 </script>
 </body>
