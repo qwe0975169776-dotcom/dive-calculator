@@ -380,7 +380,7 @@
     </div>
   </section>
 
-  <p class="version">版本 2</p>
+  <p class="version">💾 資料會自動暫存在這台裝置的瀏覽器・版本 3</p>
 </div>
 
 <script>
@@ -405,6 +405,35 @@
   let nextId = 1;
   let editingId = null;     // 正在修正的成員 id（null = 一般新增模式）
   let formSnapshot = null;  // 進入修正前的表單內容，修正完會還原
+
+  const STORAGE_KEY = 'diveCalculator_data';
+
+  /* ================= 暫存（localStorage） ================= */
+  function saveState() {
+    try {
+      const data = {
+        members,
+        nextId,
+        // 修正中時存「修正前」的表單內容，避免重新整理後卡在修正模式
+        form: editingId !== null ? formSnapshot : getFormState()
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (e) { /* 瀏覽器不允許儲存時就略過 */ }
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (Array.isArray(data.members)) {
+        members = data.members;
+        const maxId = members.reduce((mx, m) => Math.max(mx, m.id || 0), 0);
+        nextId = Math.max(data.nextId || 1, maxId + 1);
+      }
+      if (data.form) setFormState(data.form);
+    } catch (e) { /* 資料壞掉就從空白開始 */ }
+  }
 
   const NUM_FIELDS = ['shoreDive', 'lodging', 'scooter', 'insurance', 'lunch', 'breakfast'];
   const CHECK_FIELDS = ['ferry', 'boatDive', 'owCourse'];
@@ -566,6 +595,7 @@
 
   /* ================= 列表預覽 ================= */
   function renderList() {
+    saveState();
     const list = $('memberList');
     const summary = $('listSummary');
 
@@ -696,7 +726,12 @@
   $('btnClearAll').addEventListener('click', clearAll);
   $('btnCancelEdit').addEventListener('click', exitEdit);
 
-  // 初始化
+  // 表單打字時也暫存
+  form.addEventListener('input', saveState);
+  form.addEventListener('change', saveState);
+
+  // 初始化：先讀回暫存
+  loadState();
   renderList();
   $('name').focus();
 </script>
