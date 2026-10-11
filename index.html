@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>潛水旅費動態結算器</title>
+<style>
+  :root {
+    --bg: #f1f3f6;
+    --card: #ffffff;
+    --text: #1f2933;
+    --muted: #6b7280;
+    --border: #e2e6ea;
+    --blue: #2563eb;
+    --blue-dark: #1d4ed8;
+    --green: #16a34a;
+    --green-dark: #15803d;
+    --red: #dc2626;
+    --red-dark: #b91c1c;
+    --shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+    --radius: 14px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+    line-height: 1.5;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 16px 48px;
+  }
+
+  h1 {
+    text-align: center;
+    margin: 8px 0 24px;
+    font-size: 1.6rem;
+  }
+
+  h2 {
+    margin: 0 0 16px;
+    font-size: 1.2rem;
+  }
+
+  .card {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  /* ---------- 表單 Grid ---------- */
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  @media (min-width: 640px) {
+    .form-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  }
+
+  .field label {
+    display: block;
+    font-size: 0.9rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .field input[type="text"],
+  .field input[type="number"] {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .field input:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  }
+  .field .unit {
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  .check-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+    align-self: end;
+  }
+  .check-field input { width: 20px; height: 20px; cursor: pointer; }
+
+  /* ---------- 按鈕 ---------- */
+  .btn-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 20px;
+  }
+  .btn {
+    border: none;
+    border-radius: 10px;
+    padding: 12px 18px;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #fff;
+    cursor: pointer;
+    transition: background .15s, transform .05s;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn-blue { background: var(--blue); flex: 1 1 100%; }
+  .btn-blue:hover { background: var(--blue-dark); }
+  .btn-green { background: var(--green); flex: 1 1 240px; }
+  .btn-green:hover { background: var(--green-dark); }
+  .btn-red { background: var(--red); flex: 1 1 160px; }
+  .btn-red:hover { background: var(--red-dark); }
+  .btn-gray { background: #4b5563; }
+  .btn-gray:hover { background: #374151; }
+  .btn-small {
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    background: #fff;
+    color: var(--red);
+    border: 1px solid var(--red);
+  }
+  .btn-small:hover { background: var(--red); color: #fff; }
+
+  /* ---------- 成員卡片 ---------- */
+  .member-list { display: flex; flex-direction: column; gap: 12px; }
+  .member-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 14px 18px;
+    border-left: 5px solid var(--blue);
+  }
+  .member-info { min-width: 0; }
+  .member-name {
+    font-size: 1.05rem;
+    font-weight: 600;
+    word-break: break-all;
+  }
+  .member-detail {
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  .member-total {
+    color: var(--red);
+    font-weight: 800;
+    font-size: 1.5rem;
+  }
+  .empty-hint {
+    text-align: center;
+    color: var(--muted);
+    padding: 20px;
+  }
+  .list-summary {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+    color: var(--muted);
+  }
+  .list-summary strong { color: var(--text); }
+
+  /* ---------- 第二畫面：表格 ---------- */
+  #reportView { display: none; }
+
+  .report-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .table-wrap {
+    overflow: auto;
+    max-height: 70vh;
+    border: 1px solid #d0d5dc;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 900px;
+    font-size: 0.95rem;
+  }
+  th, td {
+    border: 1px solid #d0d5dc;
+    padding: 10px 12px;
+    text-align: right;
+    white-space: nowrap;
+  }
+  th:first-child, td:first-child { text-align: left; }
+
+  thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #1f2937;
+    color: #fff;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  tbody tr:nth-child(even) { background: #f7f9fb; }
+  tbody tr:hover { background: #e0ecff; }
+
+  td.total-col { font-weight: 700; color: var(--red); }
+  td.zero { color: #a0a7b1; text-align: center; }
+
+  tfoot td {
+    position: sticky;
+    bottom: 0;
+    background: #fff6c7;
+    font-weight: 800;
+    border-top: 2px solid #b8a43a;
+  }
+  .version {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🤿 潛水旅費動態結算器</h1>
+
+  <!-- ===================== 第一畫面 ===================== -->
+  <section id="inputView">
+    <div class="card">
+      <h2>輸入成員資料</h2>
+      <form id="memberForm" autocomplete="off">
+        <div class="form-grid">
+          <div class="field">
+            <label for="name">姓名</label>
+            <input type="text" id="name" placeholder="例如：小明">
+          </div>
+          <div class="field">
+            <label for="shoreDive">岸潛支數 <span class="unit">($600/支)</span></label>
+            <input type="number" id="shoreDive" min="0" value="0">
+          </div>
+          <div class="field">
+            <label for="lodging">住宿晚數 <span class="unit">($600/晚)</span></label>
+            <input type="number" id="lodging" min="0" value="0">
+          </div>
+          <div class="field">
+            <label for="scooter">機車天數 <span class="unit">($175/天)</span></label>
+            <input type="number" id="scooter" min="0" value="0">
+          </div>
+          <div class="field">
+            <label for="insurance">保險天數 <span class="unit">($150/天)</span></label>
+            <input type="number" id="insurance" min="0" value="0">
+          </div>
+          <div class="field">
+            <label for="lunch">午餐天數 <span class="unit">($150/天)</span></label>
+            <input type="number" id="lunch" min="0" value="0">
+          </div>
+          <div class="field">
+            <label for="breakfast">早餐天數 <span class="unit">($80/天)</span></label>
+            <input type="number" id="breakfast" min="0" value="0">
+          </div>
+          <label class="check-field">
+            <input type="checkbox" id="ferry" checked>
+            來回船票 <span class="unit">($1,340)</span>
+          </label>
+          <label class="check-field">
+            <input type="checkbox" id="boatDive">
+            參加船潛 <span class="unit">($2,500)</span>
+          </label>
+          <label class="check-field">
+            <input type="checkbox" id="owCourse">
+            OW課程 <span class="unit">($10,000)</span>
+          </label>
+        </div>
+
+        <div class="btn-row">
+          <button type="submit" class="btn btn-blue">➕ 結算這位成員，並加入名單</button>
+          <button type="button" class="btn btn-green" id="btnReport">📊 所有人輸入完畢！產生總對帳表</button>
+          <button type="button" class="btn btn-red" id="btnClearAll">🗑️ 全部清空重來</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>已加入名單</h2>
+      <div class="list-summary" id="listSummary"></div>
+      <div class="member-list" id="memberList"></div>
+    </div>
+  </section>
+
+  <!-- ===================== 第二畫面 ===================== -->
+  <section id="reportView">
+    <div class="card">
+      <div class="report-header">
+        <button type="button" class="btn btn-gray" id="btnBack">⬅ 返回繼續新增 / 修改</button>
+        <h2 style="margin:0;">📊 總對帳表</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>姓名</th>
+              <th>OW課程</th>
+              <th>岸潛費</th>
+              <th>船潛費</th>
+              <th>保險費</th>
+              <th>住宿費</th>
+              <th>船票</th>
+              <th>機車</th>
+              <th>午餐</th>
+              <th>早餐</th>
+              <th>個人總應繳</th>
+            </tr>
+          </thead>
+          <tbody id="reportBody"></tbody>
+          <tfoot id="reportFoot"></tfoot>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <p class="version">版本 1</p>
+</div>
+
+<script>
+  /* ================= 後台常數設定（固定單價） ================= */
+  const PRICES = Object.freeze({
+    shoreDive: 600,   // 岸潛（每支）
+    lodging:   600,   // 住宿（每晚）
+    scooter:   175,   // 機車分攤（每天）
+    ferry:     1340,  // 船票（來回）
+    boatDive:  2500,  // 船潛
+    owCourse:  10000, // OW課程
+    insurance: 150,   // 保險（每天）
+    lunch:     150,   // 午餐（每天）
+    breakfast: 80     // 早餐（每天）
+  });
+
+  // 對帳表欄位順序（不含姓名與總額）
+  const FEE_COLUMNS = ['owCourse', 'shoreDive', 'boatDive', 'insurance', 'lodging', 'ferry', 'scooter', 'lunch', 'breakfast'];
+
+  /* ================= 資料 ================= */
+  let members = [];
+  let nextId = 1;
+
+  /* ================= DOM ================= */
+  const $ = (id) => document.getElementById(id);
+  const form = $('memberForm');
+  const inputView = $('inputView');
+  const reportView = $('reportView');
+
+  /* ================= 工具函式 ================= */
+  // 讀取數字欄位：空白、負數、小數都安全處理成 >= 0 的整數
+  function readCount(id) {
+    const n = parseInt($(id).value, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function formatNum(n) {
+    return n.toLocaleString('en-US');
+  }
+
+  function formatMoney(n) {
+    return '$' + formatNum(n);
+  }
+
+  function escapeHTML(str) {
+    return str.replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  /* ================= 計算單一成員 ================= */
+  function calcMember() {
+    const counts = {
+      shoreDive: readCount('shoreDive'),
+      lodging:   readCount('lodging'),
+      scooter:   readCount('scooter'),
+      insurance: readCount('insurance'),
+      lunch:     readCount('lunch'),
+      breakfast: readCount('breakfast'),
+      ferry:     $('ferry').checked ? 1 : 0,
+      boatDive:  $('boatDive').checked ? 1 : 0,
+      owCourse:  $('owCourse').checked ? 1 : 0
+    };
+
+    const fees = {};
+    let total = 0;
+    for (const key of FEE_COLUMNS) {
+      fees[key] = counts[key] * PRICES[key];
+      total += fees[key];
+    }
+
+    return {
+      id: nextId++,
+      name: $('name').value.trim(),
+      counts,
+      fees,
+      total
+    };
+  }
+
+  /* ================= 加入成員 ================= */
+  function addMember(e) {
+    e.preventDefault();
+
+    const name = $('name').value.trim();
+    if (!name) {
+      alert('請先輸入姓名喔！');
+      $('name').focus();
+      return;
+    }
+
+    members.push(calcMember());
+    renderList();
+    resetFormForNext();
+  }
+
+  // 清空：姓名、岸潛、保險、午餐、早餐、OW、船潛
+  // 保留：住宿、機車、船票
+  function resetFormForNext() {
+    $('name').value = '';
+    $('shoreDive').value = 0;
+    $('insurance').value = 0;
+    $('lunch').value = 0;
+    $('breakfast').value = 0;
+    $('owCourse').checked = false;
+    $('boatDive').checked = false;
+    $('name').focus();
+  }
+
+  /* ================= 刪除成員 ================= */
+  function deleteMember(id) {
+    members = members.filter((m) => m.id !== id);
+    renderList();
+  }
+
+  /* ================= 列表預覽 ================= */
+  function renderList() {
+    const list = $('memberList');
+    const summary = $('listSummary');
+
+    if (members.length === 0) {
+      list.innerHTML = '<div class="empty-hint">目前還沒有成員，從上方開始輸入吧！</div>';
+      summary.innerHTML = '';
+      return;
+    }
+
+    const grandTotal = members.reduce((sum, m) => sum + m.total, 0);
+    summary.innerHTML =
+      `<span>共 <strong>${members.length}</strong> 人</span>` +
+      `<span>目前合計 <strong>${formatMoney(grandTotal)}</strong></span>`;
+
+    list.innerHTML = members.map((m) => {
+      const c = m.counts;
+      const parts = [];
+      if (c.owCourse) parts.push('OW課程');
+      if (c.shoreDive) parts.push(`岸潛${c.shoreDive}支`);
+      if (c.boatDive) parts.push('船潛');
+      if (c.lodging) parts.push(`住${c.lodging}晚`);
+      if (c.scooter) parts.push(`機車${c.scooter}天`);
+      if (c.insurance) parts.push(`保險${c.insurance}天`);
+      if (c.ferry) parts.push('船票');
+      if (c.lunch) parts.push(`午餐${c.lunch}`);
+      if (c.breakfast) parts.push(`早餐${c.breakfast}`);
+
+      return `
+        <div class="member-card">
+          <div class="member-info">
+            <div class="member-name">${escapeHTML(m.name)}</div>
+            <div class="member-total">${formatMoney(m.total)}</div>
+            <div class="member-detail">${parts.join('・') || '無任何項目'}</div>
+          </div>
+          <button type="button" class="btn btn-small" data-id="${m.id}">刪除重打</button>
+        </div>`;
+    }).join('');
+  }
+
+  // 用事件委派處理「刪除重打」
+  $('memberList').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-id]');
+    if (!btn) return;
+    const id = Number(btn.dataset.id);
+    const m = members.find((x) => x.id === id);
+    if (m && confirm(`確定要刪除「${m.name}」嗎？`)) {
+      deleteMember(id);
+    }
+  });
+
+  /* ================= 總對帳表 ================= */
+  function cell(value) {
+    return value === 0
+      ? '<td class="zero">-</td>'
+      : `<td>${formatNum(value)}</td>`;
+  }
+
+  function renderReport() {
+    const body = $('reportBody');
+    const foot = $('reportFoot');
+
+    const colTotals = {};
+    FEE_COLUMNS.forEach((k) => { colTotals[k] = 0; });
+    let grandTotal = 0;
+
+    body.innerHTML = members.map((m) => {
+      FEE_COLUMNS.forEach((k) => { colTotals[k] += m.fees[k]; });
+      grandTotal += m.total;
+      return `<tr>
+        <td>${escapeHTML(m.name)}</td>
+        ${FEE_COLUMNS.map((k) => cell(m.fees[k])).join('')}
+        <td class="total-col">${formatMoney(m.total)}</td>
+      </tr>`;
+    }).join('');
+
+    foot.innerHTML = `<tr>
+      <td>總計（${members.length} 人）</td>
+      ${FEE_COLUMNS.map((k) => `<td>${colTotals[k] === 0 ? '-' : formatNum(colTotals[k])}</td>`).join('')}
+      <td>${formatMoney(grandTotal)}</td>
+    </tr>`;
+  }
+
+  /* ================= 畫面切換 ================= */
+  function showReport() {
+    if (members.length === 0) {
+      alert('名單是空的，請先加入至少一位成員！');
+      return;
+    }
+    renderReport();
+    inputView.style.display = 'none';
+    reportView.style.display = 'block';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function showInput() {
+    reportView.style.display = 'none';
+    inputView.style.display = 'block';
+    $('name').focus();
+  }
+
+  /* ================= 全部清空 ================= */
+  function clearAll() {
+    if (members.length > 0 && !confirm('確定要清空所有成員與輸入嗎？這個動作無法復原。')) return;
+    members = [];
+    nextId = 1;
+    form.reset(); // 回到預設值（船票勾選、其他為 0 / 不勾）
+    renderList();
+    $('name').focus();
+  }
+
+  /* ================= 綁定事件 ================= */
+  form.addEventListener('submit', addMember); // 在任一欄位按 Enter 也能加入
+  $('btnReport').addEventListener('click', showReport);
+  $('btnBack').addEventListener('click', showInput);
+  $('btnClearAll').addEventListener('click', clearAll);
+
+  // 初始化
+  renderList();
+  $('name').focus();
+</script>
+</body>
+</html>
