@@ -2,22 +2,56 @@
 // 放在 GitHub，由 Apps Script 的「啟動程式」(apps-script/loader.gs) 自動下載執行。
 // 這個檔案是公開的，不能寫試算表 ID；一律從指令碼屬性讀取。
 // 快取（CacheService）的鍵 'code' 是啟動程式在用的，這裡不能用。
-const CODE_VERSION = 1;
+const CODE_VERSION = 2;
 
 const SHEET_NAME = '名單';
 
-// 次數欄位（順序 = 試算表 C~K 欄）
-const COUNT_KEYS = ['shoreDive', 'lodging', 'scooter', 'insurance', 'lunch', 'breakfast', 'ferry', 'boatDive', 'owCourse'];
-const CHECK_KEYS = ['ferry', 'boatDive', 'owCourse'];
-// 費用欄位（順序 = 試算表 L~T 欄，和網頁對帳表相同）
-const FEE_KEYS = ['owCourse', 'shoreDive', 'boatDive', 'insurance', 'lodging', 'ferry', 'scooter', 'lunch', 'breakfast'];
-
-const HEADERS = [
-  'ID', '姓名',
-  '岸潛支數', '住宿晚數', '機車天數', '保險天數', '午餐天數', '早餐天數', '船票', '船潛', 'OW課程',
-  'OW課程費', '岸潛費', '船潛費', '保險費', '住宿費', '船票費', '機車費', '午餐費', '早餐費',
-  '個人總應繳'
+// 次數欄位（試算表從 C 欄開始依序排列）
+const COUNT_COLS = [
+  ['shore25',   '10/25岸潛支數'],
+  ['shore26',   '10/26岸潛支數'],
+  ['shore27',   '10/27岸潛支數'],
+  ['lodging',   '住宿晚數'],
+  ['scooter',   '機車天數'],
+  ['insurance', '保險天數(自動)'],
+  ['lunch',     '午餐次數'],
+  ['breakfast', '早餐次數'],
+  ['ferry',     '船票'],
+  ['boatDive',  '船潛'],
+  ['owCourse',  'OW課程']
 ];
+const CHECK_KEYS = ['ferry', 'boatDive', 'owCourse'];
+
+// 費用欄位（接在次數後面，順序和網頁對帳表相同）
+const FEE_COLS = [
+  ['owCourse',  'OW課程費'],
+  ['shore25',   '10/25岸潛費'],
+  ['shore26',   '10/26岸潛費'],
+  ['shore27',   '10/27岸潛費'],
+  ['boatDive',  '船潛費'],
+  ['insurance', '保險費'],
+  ['lodging',   '住宿費'],
+  ['ferry',     '船票費'],
+  ['scooter',   '機車費'],
+  ['lunch',     '午餐費'],
+  ['breakfast', '早餐費']
+];
+
+const HEADERS = ['ID', '姓名']
+  .concat(COUNT_COLS.map(function (c) { return c[1]; }))
+  .concat(FEE_COLS.map(function (c) { return c[1]; }))
+  .concat(['個人總應繳']);
+
+// 讀取時用表頭名稱找欄位（包含舊版表頭，升級前存的資料也讀得回來）
+const READ_NAMES = {
+  '10/25岸潛支數': 'shore25', '10/26岸潛支數': 'shore26', '10/27岸潛支數': 'shore27',
+  '岸潛支數': 'shoreDive',   // 第 1 版：只有總支數，網頁會自己拆成三天
+  '住宿晚數': 'lodging', '機車天數': 'scooter',
+  '保險天數(自動)': 'insurance', '保險天數': 'insurance',
+  '午餐次數': 'lunch', '午餐天數': 'lunch',
+  '早餐次數': 'breakfast', '早餐天數': 'breakfast',
+  '船票': 'ferry', '船潛': 'boatDive', 'OW課程': 'owCourse'
+};
 
 // ---------- 入口 ----------
 function doGet(e) {
@@ -48,7 +82,8 @@ function doPost(e) {
 
 // 啟動程式的「一次設定」會呼叫這裡
 function setup() {
-  sheet_();
+  const sh = sheet_();
+  if (sh.getLastRow() <= 1) writeHeader_(sh);
 }
 
 // ---------- 試算表 ----------
@@ -58,17 +93,26 @@ function ss_() {
   return SpreadsheetApp.openById(id);
 }
 
+// 取得「名單」分頁；表頭不在這裡覆寫（讀取時要先看舊表頭）
 function sheet_() {
   const ss = ss_();
   let sh = ss.getSheetByName(SHEET_NAME);
-  if (!sh) sh = ss.insertSheet(SHEET_NAME, 0);
+  if (!sh) {
+    sh = ss.insertSheet(SHEET_NAME, 0);
+    writeHeader_(sh);
+  }
+  return sh;
+}
+
+function writeHeader_(sh) {
+  const maxCols = sh.getMaxColumns();
+  sh.getRange(1, 1, 1, maxCols).clear();
   sh.getRange(1, 1, 1, HEADERS.length)
     .setValues([HEADERS])
     .setFontWeight('bold')
     .setBackground('#1f2937')
     .setFontColor('#ffffff');
   sh.setFrozenRows(1);
-  return sh;
 }
 
 function rev_() {
@@ -88,25 +132,32 @@ function toMoney_(v) {
 
 // ---------- 讀取 ----------
 // 只讀 A 欄是數字 ID 的列（總計列 A 欄是空的，會自動略過）
-// 老師直接在試算表改次數也會被讀回來，網頁會用單價重新算費用。
+// 老師直接在試算表改次數也會被讀回來，網頁會用單價重新算費用（保險會自動重算）。
 function load_() {
   const sh = sheet_();
   const last = sh.getLastRow();
+  const lastCol = Math.max(sh.getLastColumn ? sh.getLastColumn() : HEADERS.length, 2);
   const members = [];
   if (last >= 2) {
-    const values = sh.getRange(2, 1, last - 1, 2 + COUNT_KEYS.length).getValues();
+    const header = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+    const colOf = {};
+    header.forEach(function (h, i) {
+      const key = READ_NAMES[String(h).trim()];
+      if (key && !(key in colOf)) colOf[key] = i;
+    });
+    const values = sh.getRange(2, 1, last - 1, lastCol).getValues();
     values.forEach(function (r) {
       const id = Number(r[0]);
       const name = String(r[1] == null ? '' : r[1]).trim();
       if (!id || !name) return;
       const counts = {};
-      COUNT_KEYS.forEach(function (k, i) {
-        counts[k] = toCount_(r[2 + i], CHECK_KEYS.indexOf(k) >= 0);
+      Object.keys(colOf).forEach(function (k) {
+        counts[k] = toCount_(r[colOf[k]], CHECK_KEYS.indexOf(k) >= 0);
       });
       members.push({ id: id, name: name, counts: counts });
     });
   }
-  return { ok: true, rev: rev_(), members: members };
+  return { ok: true, rev: rev_(), version: CODE_VERSION, members: members };
 }
 
 // ---------- 儲存（整份名單覆蓋） ----------
@@ -133,14 +184,14 @@ function save_(body) {
       const counts = (m && m.counts) || {};
       const fees = (m && m.fees) || {};
       const row = [id, name];
-      COUNT_KEYS.forEach(function (k) {
-        const isCheck = CHECK_KEYS.indexOf(k) >= 0;
-        const c = toCount_(counts[k], isCheck);
-        row.push(isCheck ? (c ? '✓' : '') : c);
+      COUNT_COLS.forEach(function (c) {
+        const isCheck = CHECK_KEYS.indexOf(c[0]) >= 0;
+        const n = toCount_(counts[c[0]], isCheck);
+        row.push(isCheck ? (n ? '✓' : '') : n);
       });
       let total = 0;
-      FEE_KEYS.forEach(function (k) {
-        const f = toMoney_(fees[k]);
+      FEE_COLS.forEach(function (c) {
+        const f = toMoney_(fees[c[0]]);
         total += f;
         row.push(f);
       });
@@ -151,19 +202,25 @@ function save_(body) {
     const sh = sheet_();
     const maxRows = sh.getMaxRows();
     if (maxRows >= 2) sh.getRange(2, 1, maxRows - 1, sh.getMaxColumns()).clear();
+    writeHeader_(sh);
+
+    const feeStart = 3 + COUNT_COLS.length;   // 第一個費用欄
+    const checkCols = CHECK_KEYS.map(function (k) {
+      return 3 + COUNT_COLS.map(function (c) { return c[0]; }).indexOf(k);
+    });
 
     if (rows.length) {
       const n = rows.length;
       sh.getRange(2, 1, n, HEADERS.length).setValues(rows);
-      sh.getRange(2, 12, n, FEE_KEYS.length + 1).setNumberFormat('#,##0');
-      sh.getRange(2, 9, n, 3).setHorizontalAlignment('center');
+      sh.getRange(2, feeStart, n, FEE_COLS.length + 1).setNumberFormat('#,##0');
+      checkCols.forEach(function (col) { sh.getRange(2, col, n, 1).setHorizontalAlignment('center'); });
 
       // 空一列，再放總計列（公式自動加總）
       const totalRow = n + 3;
       const totals = ['', '總計（' + n + ' 人）'];
       for (let col = 3; col <= HEADERS.length; col++) {
         const L = colLetter_(col);
-        totals.push(col >= 9 && col <= 11
+        totals.push(checkCols.indexOf(col) >= 0
           ? '=COUNTIF(' + L + '2:' + L + (n + 1) + ',"✓")'
           : '=SUM(' + L + '2:' + L + (n + 1) + ')');
       }
@@ -171,13 +228,13 @@ function save_(body) {
         .setValues([totals])
         .setFontWeight('bold')
         .setBackground('#fff6c7');
-      sh.getRange(totalRow, 12, 1, FEE_KEYS.length + 1).setNumberFormat('#,##0');
-      sh.getRange(totalRow, 9, 1, 3).setHorizontalAlignment('center');
+      sh.getRange(totalRow, feeStart, 1, FEE_COLS.length + 1).setNumberFormat('#,##0');
+      checkCols.forEach(function (col) { sh.getRange(totalRow, col, 1, 1).setHorizontalAlignment('center'); });
     }
 
     const next = cur + 1;
     PropertiesService.getScriptProperties().setProperty('REV', String(next));
-    return { ok: true, rev: next, count: rows.length };
+    return { ok: true, rev: next, version: CODE_VERSION, count: rows.length };
   } finally {
     lock.releaseLock();
   }
