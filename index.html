@@ -317,7 +317,7 @@
   }
   .sync-bar.ok   { background: #dcfce7; color: #166534; }
   .sync-bar.busy { background: #dbeafe; color: #1e40af; }
-  .sync-bar.err  { background: #fee2e2; color: #991b1b; }
+  .sync-bar.err  { background: #fee2e2; color: #991b1b; border-radius: 12px; text-align: left; }
   .sync-btn {
     border: none;
     background: transparent;
@@ -432,7 +432,7 @@
     </div>
   </section>
 
-  <p class="version">版本 5</p>
+  <p class="version">版本 6</p>
 </div>
 
 <script>
@@ -673,8 +673,13 @@
         // 不設 Content-Type，避免瀏覽器先送 CORS 預檢（Apps Script 不支援）
         ? await fetch(SHEET_URL, { method: 'POST', body: JSON.stringify(payload), signal: ac.signal })
         : await fetch(SHEET_URL + (SHEET_URL.indexOf('?') >= 0 ? '&' : '?') + 'action=load&_=' + Date.now(), { signal: ac.signal });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return await res.json();
+      if (!res.ok) throw new Error('伺服器回應 HTTP ' + res.status);
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        throw new Error('伺服器回傳的不是資料，可能部署權限不是「所有人」或還沒授權');
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -687,7 +692,16 @@
     syncTimer = setTimeout(pushToCloud, delay == null ? 800 : delay);
   }
 
-  function syncFailed(text) {
+  // 把錯誤翻成看得懂的原因
+  function errReason(err) {
+    const msg = String((err && err.message) || err || '');
+    if (err && err.name === 'AbortError') return '等太久沒有回應';
+    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) return '連不上伺服器（網路斷線，或部署權限不是「所有人」）';
+    return msg;
+  }
+
+  function syncFailed(text, err) {
+    if (err) text += '｜原因：' + errReason(err);
     setStatus('err', text);
     clearTimeout(retryTimer);
     retryTimer = setTimeout(() => (dirty ? pushToCloud() : pullFromCloud()), 15000);
@@ -726,7 +740,7 @@
         throw new Error(data.error || '儲存失敗');
       }
     } catch (err) {
-      syncFailed('⚠️ 暫時存不到 Google Sheet（已先存在本機，稍後自動重試）');
+      syncFailed('⚠️ 暫時存不到 Google Sheet（已先存在本機，稍後自動重試）', err);
     } finally {
       syncing = false;
     }
@@ -745,7 +759,7 @@
       if (!data.ok) throw new Error(data.error || '讀取失敗');
       if (!dirty) applyCloud(data); // 讀取途中若有新修改，以新修改為準
     } catch (err) {
-      syncFailed('⚠️ 讀不到 Google Sheet，目前顯示本機暫存的資料');
+      syncFailed('⚠️ 讀不到 Google Sheet，目前顯示本機暫存的資料', err);
     } finally {
       syncing = false;
       if (dirty) scheduleSync(0);
