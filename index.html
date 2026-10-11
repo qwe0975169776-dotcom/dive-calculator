@@ -138,6 +138,40 @@
     border: 1px solid var(--red);
   }
   .btn-small:hover { background: var(--red); color: #fff; }
+  .btn-edit {
+    color: var(--blue);
+    border-color: var(--blue);
+  }
+  .btn-edit:hover { background: var(--blue); color: #fff; }
+  .card-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  @media (min-width: 480px) {
+    .card-actions { flex-direction: row; }
+  }
+  .member-card.editing {
+    border-left-color: #f59e0b;
+    background: #fffbeb;
+    outline: 2px solid #f59e0b;
+  }
+  .edit-badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    background: #f59e0b;
+    color: #fff;
+    border-radius: 6px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .card.edit-mode {
+    outline: 3px solid #f59e0b;
+  }
+  .btn-orange { background: #f59e0b; flex: 1 1 100%; }
+  .btn-orange:hover { background: #d97706; }
 
   /* ---------- 成員卡片 ---------- */
   .member-list { display: flex; flex-direction: column; gap: 12px; }
@@ -253,8 +287,8 @@
 
   <!-- ===================== 第一畫面 ===================== -->
   <section id="inputView">
-    <div class="card">
-      <h2>輸入成員資料</h2>
+    <div class="card" id="formCard">
+      <h2 id="formTitle">輸入成員資料</h2>
       <form id="memberForm" autocomplete="off">
         <div class="form-grid">
           <div class="field">
@@ -300,7 +334,8 @@
         </div>
 
         <div class="btn-row">
-          <button type="submit" class="btn btn-blue">➕ 結算這位成員，並加入名單</button>
+          <button type="submit" class="btn btn-blue" id="btnSubmit">➕ 結算這位成員，並加入名單</button>
+          <button type="button" class="btn btn-gray" id="btnCancelEdit" style="display:none; flex:1 1 100%;">✖ 取消修正</button>
           <button type="button" class="btn btn-green" id="btnReport">📊 所有人輸入完畢！產生總對帳表</button>
           <button type="button" class="btn btn-red" id="btnClearAll">🗑️ 全部清空重來</button>
         </div>
@@ -345,7 +380,7 @@
     </div>
   </section>
 
-  <p class="version">版本 1</p>
+  <p class="version">版本 2</p>
 </div>
 
 <script>
@@ -368,6 +403,11 @@
   /* ================= 資料 ================= */
   let members = [];
   let nextId = 1;
+  let editingId = null;     // 正在修正的成員 id（null = 一般新增模式）
+  let formSnapshot = null;  // 進入修正前的表單內容，修正完會還原
+
+  const NUM_FIELDS = ['shoreDive', 'lodging', 'scooter', 'insurance', 'lunch', 'breakfast'];
+  const CHECK_FIELDS = ['ferry', 'boatDive', 'owCourse'];
 
   /* ================= DOM ================= */
   const $ = (id) => document.getElementById(id);
@@ -397,7 +437,7 @@
   }
 
   /* ================= 計算單一成員 ================= */
-  function calcMember() {
+  function calcMember(id) {
     const counts = {
       shoreDive: readCount('shoreDive'),
       lodging:   readCount('lodging'),
@@ -418,7 +458,7 @@
     }
 
     return {
-      id: nextId++,
+      id: id != null ? id : nextId++,
       name: $('name').value.trim(),
       counts,
       fees,
@@ -437,9 +477,68 @@
       return;
     }
 
+    if (editingId !== null) {
+      // 修正模式：原位置更新
+      const idx = members.findIndex((m) => m.id === editingId);
+      if (idx !== -1) members[idx] = calcMember(editingId);
+      exitEdit();
+      return;
+    }
+
     members.push(calcMember());
     renderList();
     resetFormForNext();
+  }
+
+  /* ================= 修正成員 ================= */
+  function getFormState() {
+    const st = { name: $('name').value };
+    NUM_FIELDS.forEach((k) => { st[k] = $(k).value; });
+    CHECK_FIELDS.forEach((k) => { st[k] = $(k).checked; });
+    return st;
+  }
+
+  function setFormState(st) {
+    $('name').value = st.name;
+    NUM_FIELDS.forEach((k) => { $(k).value = st[k]; });
+    CHECK_FIELDS.forEach((k) => { $(k).checked = !!st[k]; });
+  }
+
+  function startEdit(id) {
+    const m = members.find((x) => x.id === id);
+    if (!m) return;
+    if (editingId === null) formSnapshot = getFormState(); // 記住原本正在打的內容
+
+    editingId = id;
+    const st = { name: m.name };
+    NUM_FIELDS.forEach((k) => { st[k] = m.counts[k]; });
+    CHECK_FIELDS.forEach((k) => { st[k] = m.counts[k] === 1; });
+    setFormState(st);
+
+    updateEditUI();
+    renderList();
+    $('formCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('name').focus();
+  }
+
+  // 離開修正模式，表單還原成修正前的內容
+  function exitEdit() {
+    editingId = null;
+    if (formSnapshot) setFormState(formSnapshot);
+    formSnapshot = null;
+    updateEditUI();
+    renderList();
+    $('name').focus();
+  }
+
+  function updateEditUI() {
+    const editing = editingId !== null;
+    const m = editing ? members.find((x) => x.id === editingId) : null;
+    $('formTitle').textContent = editing ? `✏️ 修正中：${m ? m.name : ''}` : '輸入成員資料';
+    $('btnSubmit').textContent = editing ? '💾 儲存修正' : '➕ 結算這位成員，並加入名單';
+    $('btnSubmit').className = editing ? 'btn btn-orange' : 'btn btn-blue';
+    $('btnCancelEdit').style.display = editing ? 'block' : 'none';
+    $('formCard').classList.toggle('edit-mode', editing);
   }
 
   // 清空：姓名、岸潛、保險、午餐、早餐、OW、船潛
@@ -458,7 +557,11 @@
   /* ================= 刪除成員 ================= */
   function deleteMember(id) {
     members = members.filter((m) => m.id !== id);
-    renderList();
+    if (id === editingId) {
+      exitEdit();
+    } else {
+      renderList();
+    }
   }
 
   /* ================= 列表預覽 ================= */
@@ -491,13 +594,16 @@
       if (c.breakfast) parts.push(`早餐${c.breakfast}`);
 
       return `
-        <div class="member-card">
+        <div class="member-card${m.id === editingId ? ' editing' : ''}">
           <div class="member-info">
-            <div class="member-name">${escapeHTML(m.name)}</div>
+            <div class="member-name">${escapeHTML(m.name)}${m.id === editingId ? '<span class="edit-badge">修正中</span>' : ''}</div>
             <div class="member-total">${formatMoney(m.total)}</div>
             <div class="member-detail">${parts.join('・') || '無任何項目'}</div>
           </div>
-          <button type="button" class="btn btn-small" data-id="${m.id}">刪除重打</button>
+          <div class="card-actions">
+            <button type="button" class="btn btn-small btn-edit" data-action="edit" data-id="${m.id}">✏️ 修正</button>
+            <button type="button" class="btn btn-small" data-action="delete" data-id="${m.id}">刪除重打</button>
+          </div>
         </div>`;
     }).join('');
   }
@@ -508,7 +614,10 @@
     if (!btn) return;
     const id = Number(btn.dataset.id);
     const m = members.find((x) => x.id === id);
-    if (m && confirm(`確定要刪除「${m.name}」嗎？`)) {
+    if (!m) return;
+    if (btn.dataset.action === 'edit') {
+      startEdit(id);
+    } else if (confirm(`確定要刪除「${m.name}」嗎？`)) {
       deleteMember(id);
     }
   });
@@ -547,6 +656,10 @@
 
   /* ================= 畫面切換 ================= */
   function showReport() {
+    if (editingId !== null) {
+      alert('目前正在修正成員，請先按「儲存修正」或「取消修正」！');
+      return;
+    }
     if (members.length === 0) {
       alert('名單是空的，請先加入至少一位成員！');
       return;
@@ -568,6 +681,9 @@
     if (members.length > 0 && !confirm('確定要清空所有成員與輸入嗎？這個動作無法復原。')) return;
     members = [];
     nextId = 1;
+    editingId = null;
+    formSnapshot = null;
+    updateEditUI();
     form.reset(); // 回到預設值（船票勾選、其他為 0 / 不勾）
     renderList();
     $('name').focus();
@@ -578,6 +694,7 @@
   $('btnReport').addEventListener('click', showReport);
   $('btnBack').addEventListener('click', showInput);
   $('btnClearAll').addEventListener('click', clearAll);
+  $('btnCancelEdit').addEventListener('click', exitEdit);
 
   // 初始化
   renderList();
