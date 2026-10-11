@@ -82,6 +82,27 @@
     outline: none;
     transition: border-color .15s, box-shadow .15s;
   }
+  .field select {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    outline: none;
+    background: #fff;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .field select:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+  }
+  .name-hint {
+    font-size: 0.8rem;
+    color: var(--blue);
+    margin-top: 4px;
+    min-height: 1em;
+  }
   .field input:focus {
     border-color: var(--blue);
     box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
@@ -322,8 +343,9 @@
       <form id="memberForm" autocomplete="off">
         <div class="form-grid">
           <div class="field">
-            <label for="name">姓名</label>
-            <input type="text" id="name" placeholder="例如：小明">
+            <label for="name">姓名（選擇成員）</label>
+            <select id="name"></select>
+            <div class="name-hint" id="nameHint"></div>
           </div>
           <div class="field">
             <label for="shoreDive">岸潛支數 <span class="unit">($600/支)</span></label>
@@ -410,13 +432,13 @@
     </div>
   </section>
 
-  <p class="version">版本 4</p>
+  <p class="version">版本 5</p>
 </div>
 
 <script>
   /* ================= Google Sheet 連線設定 ================= */
   // Apps Script「網頁應用程式」的 /exec 網址；留空＝只存在本機
-  const SHEET_URL = '';
+  const SHEET_URL = 'https://script.google.com/macros/s/AKfycbyGlxFDdal-XAl-XCJQM45tBWy2kLA7ZU1Kbb2BWWgjmmLYd5493fGTt7VrDeB7i5Tt0g/exec';
 
   /* ================= 後台常數設定（固定單價） ================= */
   const PRICES = Object.freeze({
@@ -430,6 +452,21 @@
     lunch:     150,   // 午餐（每天）
     breakfast: 80     // 早餐（每天）
   });
+
+  /* ================= 成員名單與預設次數（10/25–10/27） ================= */
+  // 選了名字會自動帶入：岸潛支數、早餐次數、午餐次數（之後仍可修改）
+  const ROSTER = [
+    { name: '小柯',        shoreDive: 8, breakfast: 3, lunch: 2 },
+    { name: '黃緬雄(Leo)', shoreDive: 8, breakfast: 3, lunch: 3 },
+    { name: '王偉展',      shoreDive: 8, breakfast: 0, lunch: 0 },
+    { name: '段芊',        shoreDive: 7, breakfast: 3, lunch: 0 },
+    { name: '何宥萱',      shoreDive: 6, breakfast: 3, lunch: 0 },
+    { name: 'Hebe',        shoreDive: 6, breakfast: 2, lunch: 3 },
+    { name: '子耕',        shoreDive: 6, breakfast: 2, lunch: 2 },
+    { name: '吳小六',      shoreDive: 6, breakfast: 0, lunch: 0 },
+    { name: '篊傑',        shoreDive: 4, breakfast: 3, lunch: 3 },
+    { name: '胡青洋',      shoreDive: 3, breakfast: 0, lunch: 2 }
+  ];
 
   // 對帳表欄位順序（不含姓名與總額）
   const FEE_COLUMNS = ['owCourse', 'shoreDive', 'boatDive', 'insurance', 'lodging', 'ferry', 'scooter', 'lunch', 'breakfast'];
@@ -516,9 +553,51 @@
 
   function setFormState(st) {
     if (!st) return;
-    $('name').value = st.name || '';
+    renderNameOptions(st.name || '');
     NUM_FIELDS.forEach((k) => { if (st[k] != null) $(k).value = st[k]; });
     CHECK_FIELDS.forEach((k) => { $(k).checked = !!st[k]; });
+  }
+
+  /* ================= 姓名選單 ================= */
+  // 已加入的人會變灰不能選（修正中的那位除外）
+  function renderNameOptions(wanted) {
+    const sel = $('name');
+    const current = wanted != null ? wanted : sel.value;
+    const editingName = editingId !== null ? (members.find((m) => m.id === editingId) || {}).name : null;
+    const added = new Set(members.filter((m) => m.id !== editingId).map((m) => m.name));
+
+    const names = ROSTER.map((r) => r.name);
+    // 名單外的名字（例如舊資料）只在修正它時出現
+    if (editingName && names.indexOf(editingName) === -1) names.push(editingName);
+
+    const remaining = names.filter((n) => !added.has(n)).length;
+    let html = `<option value="">${remaining ? '— 請選擇成員 —' : '— 全部成員都已加入 —'}</option>`;
+    names.forEach((n) => {
+      const done = added.has(n);
+      html += `<option value="${escapeHTML(n)}"${done ? ' disabled' : ''}>${escapeHTML(n)}${done ? '（已加入）' : ''}</option>`;
+    });
+    sel.innerHTML = html;
+    sel.value = names.indexOf(current) !== -1 && !added.has(current) ? current : '';
+    updateNameHint();
+  }
+
+  function updateNameHint() {
+    const r = ROSTER.find((x) => x.name === $('name').value);
+    $('nameHint').textContent = r
+      ? `預設：岸潛 ${r.shoreDive} 支・早餐 ${r.breakfast} 次・午餐 ${r.lunch} 次（可自行修改）`
+      : '';
+  }
+
+  // 選了名字 → 自動帶入預設次數（修正模式不自動改，避免蓋掉已改好的數字）
+  function onNameChange() {
+    const r = ROSTER.find((x) => x.name === $('name').value);
+    if (r && editingId === null) {
+      $('shoreDive').value = r.shoreDive;
+      $('breakfast').value = r.breakfast;
+      $('lunch').value = r.lunch;
+    }
+    updateNameHint();
+    saveLocal();
   }
 
   /* ================= 本機暫存（雲端連不上時的備份） ================= */
@@ -752,8 +831,13 @@
 
     const name = $('name').value.trim();
     if (!name) {
-      alert('請先輸入姓名喔！');
+      alert('請先選擇成員喔！');
       $('name').focus();
+      return;
+    }
+
+    if (members.some((m) => m.name === name && m.id !== editingId)) {
+      alert(`「${name}」已經在名單裡了，要改他的資料請按他卡片上的「修正」。`);
       return;
     }
 
@@ -779,6 +863,7 @@
   // 保留：住宿、機車、船票
   function resetFormForNext() {
     $('name').value = '';
+    updateNameHint();
     $('shoreDive').value = 0;
     $('insurance').value = 0;
     $('lunch').value = 0;
@@ -840,6 +925,7 @@
 
   /* ================= 列表預覽 ================= */
   function renderList() {
+    renderNameOptions();
     const list = $('memberList');
     const summary = $('listSummary');
 
@@ -969,6 +1055,7 @@
   form.addEventListener('submit', addMember); // 在任一欄位按 Enter 也能加入
   form.addEventListener('input', saveLocal);  // 打到一半也先存在本機
   form.addEventListener('change', saveLocal);
+  $('name').addEventListener('change', onNameChange);
   $('btnReport').addEventListener('click', showReport);
   $('btnBack').addEventListener('click', showInput);
   $('btnClearAll').addEventListener('click', clearAll);
